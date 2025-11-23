@@ -3,3 +3,7 @@ Cargo.lock
 
 # OS
 .DS_Store
+
+# Editor
+.zed
+*.code-workspace
