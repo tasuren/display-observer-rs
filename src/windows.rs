@@ -119,16 +119,7 @@ struct EventTracker(HashMap<WindowsDisplayId, Resolution>);
 
 impl EventTracker {
     fn new() -> Result<Self, WindowsError> {
-        let mut tracker = Self(HashMap::new());
-        tracker.refresh()?;
-
-        Ok(tracker)
-    }
-
-    fn refresh(&mut self) -> Result<(), WindowsError> {
-        self.0 = get_monitors()?;
-
-        Ok(())
+        Ok(Self(get_monitors()?))
     }
 
     fn track_events(&mut self) -> Result<SmallVec<[DisplayEvent; 10]>, WindowsError> {
