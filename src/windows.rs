@@ -119,10 +119,10 @@ struct EventTracker(HashMap<WindowsDisplayId, Resolution>);
 
 impl EventTracker {
     fn new() -> Result<Self, WindowsError> {
-        let mut displays = Self(HashMap::new());
-        displays.refresh()?;
+        let mut tracker = Self(HashMap::new());
+        tracker.refresh()?;
 
-        Ok(displays)
+        Ok(tracker)
     }
 
     fn refresh(&mut self) -> Result<(), WindowsError> {
@@ -163,7 +163,7 @@ impl EventTracker {
 
 struct ObserverContext {
     callback: Option<DisplayEventCallback>,
-    displays: EventTracker,
+    tracker: EventTracker,
 }
 
 pub struct WindowsDisplayObserver {
@@ -191,7 +191,7 @@ impl WindowsDisplayObserver {
 
         let ctx = Arc::new(Mutex::new(ObserverContext {
             callback: None,
-            displays: EventTracker::new()?,
+            tracker: EventTracker::new()?,
         }));
         let state_ptr = Arc::as_ptr(&ctx) as *mut c_void;
 
@@ -285,7 +285,7 @@ fn process_window_message(
     ctx: &mut ObserverContext,
 ) -> Result<Option<SmallVec<[DisplayEvent; 10]>>, WindowsError> {
     Ok(match msg {
-        WM_DISPLAYCHANGE => Some(ctx.displays.track_events()?),
+        WM_DISPLAYCHANGE => Some(ctx.tracker.track_events()?),
         _ => None,
     })
 }
