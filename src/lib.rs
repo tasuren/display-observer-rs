@@ -18,10 +18,10 @@ pub use windows::{
 /// It is used to track displays across different platforms.
 ///
 /// # Platform-specific
-/// - **Windows**: The id is a value of [`HMONITOR`][HMONITOR].
+/// - **Windows**: The id is [device path][device path].
 /// - **macOS**: The id is a value of [`CGDirectDisplayID`][CGDirectDisplayID].
 ///
-/// [HMONITOR]: https://learn.microsoft.com/en-us/windows/win32/gdi/hmonitor-and-the-device-context
+/// [device path]: https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats#dos-device-paths
 /// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DisplayId(PlatformDisplayId);

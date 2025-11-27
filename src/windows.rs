@@ -58,12 +58,12 @@ impl WindowsDisplayId {
         Ok(Self { name })
     }
 
-    /// Device identification strings.
+    /// Get device identification string. This is also called device path.
     /// e.g. `\\?\DISPLAY1..."`
     ///
     /// See [Microsoft's documentation][docs] for more details.
     ///
-    /// [docs]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/device-identification-strings
+    /// [docs]: https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats#dos-device-paths
     pub fn name(&self) -> &OsString {
         &self.name
     }
