@@ -1,14 +1,16 @@
 use std::{
+    collections::HashMap,
     ffi::c_void,
     sync::{Arc, Mutex},
 };
 
+use objc2_core_foundation::CGSize;
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
-    CGDisplayRemoveReconfigurationCallback, CGError,
+    CGDisplayRemoveReconfigurationCallback, CGDisplayScreenSize, CGError, CGGetActiveDisplayList,
 };
 
-use crate::{DisplayEvent, DisplayEventCallback, DisplayId};
+use crate::{DisplayEvent, DisplayEventCallback, Resolution};
 
 pub type MacOSDisplayId = CGDirectDisplayID;
 
@@ -40,8 +42,78 @@ impl CGErrorToResult for CGError {
     }
 }
 
+impl From<CGSize> for Resolution {
+    fn from(value: CGSize) -> Self {
+        Self {
+            width: value.width as _,
+            height: value.height as _,
+        }
+    }
+}
+
+fn get_displays() -> Result<HashMap<MacOSDisplayId, Resolution>, MacOSError> {
+    const MAX_DISPLAYS: u32 = 20;
+    let mut active_displays = [0; MAX_DISPLAYS as _];
+    let mut display_count = 0;
+
+    unsafe {
+        CGGetActiveDisplayList(
+            MAX_DISPLAYS,
+            &raw mut active_displays as *mut _,
+            &mut display_count,
+        )
+        .into_result(())?;
+    }
+
+    let mut displays = HashMap::new();
+    for display_id in active_displays {
+        let size = CGDisplayScreenSize(display_id);
+        displays.insert(display_id, size.into());
+    }
+
+    Ok(displays)
+}
+
+#[derive(Default)]
+struct EventTracker(HashMap<MacOSDisplayId, Resolution>);
+
+impl EventTracker {
+    fn new() -> Result<Self, MacOSError> {
+        Ok(Self(get_displays()?))
+    }
+
+    fn add(&mut self, id: MacOSDisplayId) -> Resolution {
+        let resolution = CGDisplayScreenSize(id).into();
+        self.0.insert(id, resolution);
+        resolution
+    }
+
+    fn remove(&mut self, id: MacOSDisplayId) {
+        self.0.remove(&id);
+    }
+
+    fn track_resolution_changed(&mut self) -> Result<Option<DisplayEvent>, MacOSError> {
+        let before = std::mem::replace(&mut self.0, get_displays()?);
+
+        for (key, before) in before.iter() {
+            if let Some(after) = self.0.get(key)
+                && before != after
+            {
+                return Ok(Some(DisplayEvent::ResolutionChanged {
+                    id: (*key).into(),
+                    before: *before,
+                    after: *after,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
 struct UserInfo {
     callback: Option<DisplayEventCallback>,
+    tracker: EventTracker,
 }
 
 pub struct MacOSDisplayObserver {
@@ -49,41 +121,29 @@ pub struct MacOSDisplayObserver {
 }
 
 impl MacOSDisplayObserver {
-    pub fn new() -> Self {
-        let state = Arc::new(Mutex::new(UserInfo { callback: None }));
-
-        Self { user_info: state }
-    }
-
-    pub fn set_callback(&self, callback: DisplayEventCallback) -> Result<(), MacOSError> {
-        let mut user_info = self.user_info.lock().unwrap();
-
-        if user_info.callback.is_none() {
-            // Register the callback.
-            unsafe {
-                let user_info = Arc::as_ptr(&self.user_info) as *mut c_void;
-                CGDisplayRegisterReconfigurationCallback(Some(display_callback), user_info)
-                    .into_result(())?;
-            }
-        }
-
-        user_info.callback = Some(callback);
-
-        Ok(())
-    }
-
-    pub fn remove_callback(&self) -> Result<(), MacOSError> {
-        let mut user_info = self.user_info.lock().unwrap();
+    pub fn new() -> Result<Self, MacOSError> {
+        let user_info = Arc::new(Mutex::new(UserInfo {
+            callback: None,
+            tracker: EventTracker::new()?,
+        }));
 
         unsafe {
-            let user_info = Arc::as_ptr(&self.user_info) as *mut c_void;
-            CGDisplayRemoveReconfigurationCallback(Some(display_callback), user_info)
+            let user_info = Arc::as_ptr(&user_info) as *mut c_void;
+            CGDisplayRegisterReconfigurationCallback(Some(display_callback), user_info)
                 .into_result(())?;
         }
 
-        user_info.callback = None;
+        Ok(Self { user_info })
+    }
 
-        Ok(())
+    pub fn set_callback(&self, callback: DisplayEventCallback) {
+        let mut user_info = self.user_info.lock().unwrap();
+        user_info.callback = Some(callback);
+    }
+
+    pub fn remove_callback(&self) {
+        let mut user_info = self.user_info.lock().unwrap();
+        user_info.callback = None;
     }
 
     /// Run the [`NSApplication`][NSApplication] and start handling events.
@@ -102,12 +162,16 @@ impl MacOSDisplayObserver {
 impl Drop for MacOSDisplayObserver {
     fn drop(&mut self) {
         // TODO: Should I warn if it returns error.
-        let _ = self.remove_callback();
+        unsafe {
+            let user_info = Arc::as_ptr(&self.user_info) as *mut c_void;
+            let _ = CGDisplayRemoveReconfigurationCallback(Some(display_callback), user_info)
+                .into_result(());
+        }
     }
 }
 
 unsafe extern "C-unwind" fn display_callback(
-    display: CGDirectDisplayID,
+    id: CGDirectDisplayID,
     flags: CGDisplayChangeSummaryFlags,
     user_info: *mut c_void,
 ) {
@@ -129,14 +193,21 @@ unsafe extern "C-unwind" fn display_callback(
     };
 
     if user_info.callback.is_some() {
-        let id = DisplayId(display);
-
         let event = if flags.contains(CGDisplayChangeSummaryFlags::AddFlag) {
-            DisplayEvent::Added(id)
+            let resolution = user_info.tracker.add(id);
+            DisplayEvent::Added {
+                id: id.into(),
+                resolution,
+            }
         } else if flags.contains(CGDisplayChangeSummaryFlags::RemoveFlag) {
-            DisplayEvent::Removed(id)
+            user_info.tracker.remove(id);
+            DisplayEvent::Removed(id.into())
         } else if flags.contains(CGDisplayChangeSummaryFlags::SetModeFlag) {
-            DisplayEvent::ConfigurationChanged(id)
+            if let Ok(Some(event)) = user_info.tracker.track_resolution_changed() {
+                event
+            } else {
+                return;
+            }
         } else {
             return;
         };

@@ -53,7 +53,10 @@ pub struct Resolution {
 
 #[derive(Debug, Clone)]
 pub enum DisplayEvent {
-    Added(DisplayId),
+    Added {
+        id: DisplayId,
+        resolution: Resolution,
+    },
     Removed(DisplayId),
     ResolutionChanged {
         id: DisplayId,
@@ -82,18 +85,9 @@ impl DisplayObserver {
     /// # Platform-specific
     /// - **macOS**: This will always return `Ok`.
     pub fn new() -> Result<Self, Error> {
-        #[cfg(target_os = "windows")]
-        {
-            Ok(Self {
-                inner: windows::WindowsDisplayObserver::new()?,
-            })
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(Self {
-                inner: macos::MacOSDisplayObserver::new(),
-            })
-        }
+        Ok(Self {
+            inner: PlatformDisplayObserver::new()?,
+        })
     }
 
     pub fn into_platform_display_observer(self) -> PlatformDisplayObserver {

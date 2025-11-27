@@ -16,6 +16,11 @@ display-info = "0.5.7"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
 
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-foundation]
+version = "0.3.2"
+default-features = false
+features = ["CFCGTypes"]
+
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-graphics]
 version = "0.3.2"
 default-features = false

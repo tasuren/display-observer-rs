@@ -4,12 +4,12 @@ fn main() {
     let monitor = DisplayObserver::new().expect("Failed to create the instance");
 
     monitor.set_callback(|event| match event {
-        DisplayEvent::Added(id) => println!("Display added: {id:?}"),
+        DisplayEvent::Added { id, resolution } => {
+            println!("Display added: {id:?}, resolution = {resolution:?}")
+        }
         DisplayEvent::Removed(id) => println!("Display removed: {id:?}"),
         DisplayEvent::ResolutionChanged { id, before, after } => {
-            println!(
-                "Display configuration changed: {id:?}, before = {before:?}, after = {after:?}"
-            )
+            println!("Display resolution changed: {id:?}, before = {before:?}, after = {after:?}")
         }
     });
 
