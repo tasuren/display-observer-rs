@@ -1,54 +1,204 @@
-// TODO: AI generated codes. We should refactor this.
-
-use crate::{DisplayEvent, DisplayEventCallback, DisplayId};
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetDC, GetDeviceCaps, HORZRES, VERTRES};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
-    DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DispatchMessageW,
-    GWLP_USERDATA, GetMessageW, HDEVNOTIFY, MSG, RegisterClassW, RegisterDeviceNotificationW,
-    TranslateMessage, WINDOW_EX_STYLE, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WNDCLASSW,
-    WS_OVERLAPPEDWINDOW,
+use std::{
+    collections::HashMap,
+    ffi::{OsString, c_void},
+    os::windows::ffi::OsStringExt,
+    sync::{Arc, Mutex},
 };
-use windows::core::{PCWSTR, w};
 
-struct CallbackState {
+use smallvec::SmallVec;
+use windows::{
+    Win32::{
+        Devices::Display::*, Foundation::*, Graphics::Gdi::*, System::LibraryLoader::*,
+        UI::WindowsAndMessaging::*,
+    },
+    core::{BOOL, w},
+};
+
+use crate::{DisplayEvent, DisplayEventCallback, Resolution};
+
+pub type WindowsError = windows::core::Error;
+
+impl From<WindowsError> for crate::Error {
+    fn from(value: WindowsError) -> Self {
+        Self::PlatformError(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowsDisplayId {
+    name: OsString,
+}
+
+impl std::hash::Hash for WindowsDisplayId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
+}
+
+impl PartialEq for WindowsDisplayId {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.eq(&other.name)
+    }
+}
+
+impl Eq for WindowsDisplayId {}
+
+impl WindowsDisplayId {
+    pub fn new(name: OsString) -> Self {
+        Self { name }
+    }
+
+    pub fn from_handle(handle: HMONITOR) -> Result<Self, WindowsError> {
+        let mut monitor_info = MONITORINFOEXW::default();
+        monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as _;
+
+        unsafe { GetMonitorInfoW(handle, &raw mut monitor_info as _).ok()? };
+        let name = OsString::from_wide(&monitor_info.szDevice);
+
+        Ok(Self { name })
+    }
+
+    /// Device identification strings.
+    /// e.g. `\\?\DISPLAY#GSM5959#5&2c6c93d8&0&UID4352#{e6f07b5f-ee97-4a05-9d08-059f23856a92}`
+    ///
+    /// See [Microsoft's documentation][docs] for more details.
+    ///
+    /// [docs]: https://learn.microsoft.com/en-us/windows-hardware/drivers/install/device-identification-strings
+    pub fn name(&self) -> &OsString {
+        &self.name
+    }
+}
+
+impl From<RECT> for Resolution {
+    fn from(value: RECT) -> Self {
+        Self {
+            width: (value.right - value.left) as _,
+            height: (value.top - value.bottom) as _,
+        }
+    }
+}
+
+unsafe extern "system" fn monitor_enum_proc(
+    h_monitor: HMONITOR,
+    _hdc: HDC,
+    rect: *mut RECT,
+    user_data: LPARAM,
+) -> BOOL {
+    let monitors_ptr = user_data.0 as *mut HashMap<WindowsDisplayId, Resolution>;
+    if monitors_ptr.is_null() || rect.is_null() {
+        return false.into();
+    }
+
+    let monitors = unsafe { &mut *monitors_ptr };
+    let rect = unsafe { *rect };
+
+    if let Ok(id) = WindowsDisplayId::from_handle(h_monitor) {
+        monitors.insert(id, Resolution::from(rect));
+    }
+
+    true.into()
+}
+
+fn get_monitors() -> Result<HashMap<WindowsDisplayId, Resolution>, WindowsError> {
+    let mut monitors = HashMap::new();
+
+    unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(&raw mut monitors as isize),
+        )
+        .ok()?;
+    };
+
+    Ok(monitors)
+}
+
+struct EventTracker(HashMap<WindowsDisplayId, Resolution>);
+
+impl EventTracker {
+    fn new() -> Result<Self, WindowsError> {
+        let mut displays = Self(HashMap::new());
+        displays.refresh()?;
+
+        Ok(displays)
+    }
+
+    fn refresh(&mut self) -> Result<(), WindowsError> {
+        self.0 = get_monitors()?;
+
+        Ok(())
+    }
+
+    fn track_events(&mut self) -> Result<SmallVec<[DisplayEvent; 10]>, WindowsError> {
+        let before = std::mem::replace(&mut self.0, get_monitors()?);
+        let mut events = SmallVec::new();
+
+        for (key, before_resolution) in before.iter() {
+            if let Some(resolution) = self.0.get(key)
+                && resolution != before_resolution
+            {
+                events.push(DisplayEvent::ResolutionChanged {
+                    id: key.clone().into(),
+                    before: *before_resolution,
+                    after: *resolution,
+                });
+            };
+
+            if !self.0.contains_key(key) {
+                events.push(DisplayEvent::Removed(key.clone().into()));
+            }
+        }
+
+        for key in self.0.keys() {
+            if !before.contains_key(key) {
+                events.push(DisplayEvent::Added(key.clone().into()));
+            }
+        }
+
+        Ok(events)
+    }
+}
+
+struct ObserverContext {
     callback: Option<DisplayEventCallback>,
+    displays: EventTracker,
 }
 
-pub struct MonitorInner {
+pub struct WindowsDisplayObserver {
     hwnd: HWND,
-    hnotify: HDEVNOTIFY,
-    state: Arc<Mutex<CallbackState>>,
+    h_notify: HDEVNOTIFY,
+    ctx: Arc<Mutex<ObserverContext>>,
 }
 
-impl MonitorInner {
-    pub fn new() -> Result<Self, anyhow::Error> {
-        let instance = unsafe { GetModuleHandleW(None)? };
-        let class_name = w!("DisplayMonitorClass");
+impl WindowsDisplayObserver {
+    pub fn new() -> Result<Self, WindowsError> {
+        let h_instance = unsafe { GetModuleHandleW(None)? };
+        let window_class_name = w!("DisplayMonitorClass");
 
-        let wc = WNDCLASSW {
+        let window_class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wnd_proc),
-            hInstance: instance.into(),
-            lpszClassName: class_name,
+            hInstance: h_instance.into(),
+            lpszClassName: window_class_name,
             ..Default::default()
         };
 
         unsafe {
-            RegisterClassW(&wc);
+            RegisterClassW(&window_class);
         }
 
-        let state = Arc::new(Mutex::new(CallbackState { callback: None }));
-        let state_ptr = Arc::as_ptr(&state) as *mut c_void;
+        let ctx = Arc::new(Mutex::new(ObserverContext {
+            callback: None,
+            displays: EventTracker::new()?,
+        }));
+        let state_ptr = Arc::as_ptr(&ctx) as *mut c_void;
 
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
-                class_name,
+                window_class_name,
                 w!("DisplayMonitorWindow"),
                 WS_OVERLAPPEDWINDOW,
                 0,
@@ -57,81 +207,87 @@ impl MonitorInner {
                 0,
                 None,
                 None,
-                instance,
+                Some(h_instance.into()),
                 Some(state_ptr),
-            )
+            )?
         };
 
-        if hwnd.0 == std::ptr::null_mut() {
-            return Err(anyhow::anyhow!("Failed to create window"));
-        }
-
-        // Register for device notifications
-        // We need to register for GUID_DEVINTERFACE_MONITOR
-        // GUID_DEVINTERFACE_MONITOR: {E6F07B5F-EE97-4a90-B076-33F57BF4EAA7}
-        let interface_class_guid =
-            windows::core::GUID::from_u128(0xE6F07B5F_EE97_4a90_B076_33F57BF4EAA7);
-
-        let mut filter = windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W {
-            dbcc_size: std::mem::size_of::<
-                windows::Win32::UI::WindowsAndMessaging::DEV_BROADCAST_DEVICEINTERFACE_W,
-            >() as u32,
-            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE,
-            dbcc_classguid: interface_class_guid,
+        let mut filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+            dbcc_size: std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
+            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+            dbcc_classguid: GUID_DEVINTERFACE_MONITOR,
             ..Default::default()
         };
 
-        let hnotify = unsafe {
+        let h_notify = unsafe {
             RegisterDeviceNotificationW(
-                hwnd,
+                hwnd.into(),
                 &mut filter as *mut _ as *const c_void,
                 DEVICE_NOTIFY_WINDOW_HANDLE,
-            )
-        }?;
+            )?
+        };
 
-        // Store the state pointer in the window user data so WndProc can access it
-        // Note: We passed it in CreateWindowExW, but we also set it here to be sure or if we missed WM_CREATE handling
+        // Store the state pointer in the window user data so WndProc can access it.
+        // NOTE: We passed it in CreateWindowExW, but we also set it here to be sure or if we missed WM_CREATE handling.
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         }
 
         Ok(Self {
             hwnd,
-            hnotify,
-            state,
+            h_notify,
+            ctx,
         })
     }
 
-    pub fn set_callback(&mut self, callback: DisplayEventCallback) {
-        let mut state = self.state.lock().unwrap();
+    pub fn set_callback(&self, callback: DisplayEventCallback) {
+        let mut state = self.ctx.lock().unwrap();
         state.callback = Some(callback);
     }
 
-    pub fn run(&self) -> Result<(), anyhow::Error> {
+    pub fn remove_callback(&self) {
+        let mut state = self.ctx.lock().unwrap();
+        state.callback = None;
+    }
+
+    pub fn run(&self) -> Result<(), WindowsError> {
         unsafe {
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).into() {
-                TranslateMessage(&msg);
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
+
         Ok(())
     }
 }
 
-impl Drop for MonitorInner {
+impl Drop for WindowsDisplayObserver {
     fn drop(&mut self) {
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{
                 DestroyWindow, UnregisterDeviceNotification,
             };
-            if !self.hnotify.is_invalid() {
-                let _ = UnregisterDeviceNotification(self.hnotify);
+            if !self.h_notify.is_invalid() {
+                let _ = UnregisterDeviceNotification(self.h_notify);
             }
             let _ = DestroyWindow(self.hwnd);
         }
     }
+}
+
+#[inline]
+fn process_window_message(
+    msg: u32,
+    _wparam: WPARAM,
+    _lparam: LPARAM,
+    ctx: &mut ObserverContext,
+) -> Result<Option<SmallVec<[DisplayEvent; 10]>>, WindowsError> {
+    Ok(match msg {
+        WM_DISPLAYCHANGE => Some(ctx.displays.track_events()?),
+        _ => None,
+    })
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -140,53 +296,27 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
+    let default_window_proc = || unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
 
-    let user_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    if user_data == 0 {
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    let ctx = unsafe {
+        let user_data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let user_data_ptr = user_data as *const Mutex<ObserverContext>;
+
+        if user_data_ptr.is_null() {
+            return default_window_proc();
+        }
+
+        &*(user_data_ptr)
+    };
+
+    if let Ok(mut ctx) = ctx.lock()
+        && let Ok(Some(events)) = process_window_message(msg, wparam, lparam, &mut ctx)
+        && let Some(callback) = ctx.callback.as_mut()
+    {
+        for event in events {
+            (callback)(event);
+        }
     }
 
-    let state_ptr = user_data as *const Mutex<CallbackState>;
-    let state = &*state_ptr;
-
-    match msg {
-        WM_DISPLAYCHANGE => {
-            if let Ok(mut guard) = state.lock() {
-                if let Some(cb) = &mut guard.callback {
-                    // Resolution changed
-                    let width = (lparam.0 & 0xFFFF) as u32;
-                    let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
-                    // For DisplayId on Windows, it's complex to map exactly to a specific monitor from just this message
-                    // without enumerating. For now, we'll use a dummy ID or try to find the primary.
-                    // The user asked for "tracking connection/disconnection and resolution".
-                    // WM_DISPLAYCHANGE is global.
-                    // We'll use 0 as a generic ID for "primary/desktop" or try to improve this later.
-                    cb(DisplayEvent::ResolutionChanged(DisplayId(0), width, height));
-                }
-            }
-        }
-        WM_DEVICECHANGE => {
-            if let Ok(mut guard) = state.lock() {
-                if let Some(cb) = &mut guard.callback {
-                    match wparam.0 as u32 {
-                        DBT_DEVICEARRIVAL => {
-                            // A device arrived. We should check if it's a monitor.
-                            // lparam points to DEV_BROADCAST_HDR.
-                            // We filtered for monitors, so it likely is.
-                            // We can parse lparam to get the ID.
-                            cb(DisplayEvent::Connected(DisplayId(0))); // Placeholder ID
-                        }
-                        DBT_DEVICEREMOVECOMPLETE => {
-                            cb(DisplayEvent::Disconnected(DisplayId(0))); // Placeholder ID
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+    default_window_proc()
 }

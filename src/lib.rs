@@ -14,12 +14,34 @@ pub use windows::{
     WindowsError as PlatformError,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DisplayId(pub PlatformDisplayId);
+/// A unique identifier for a display.
+/// It is used to track displays across different platforms.
+///
+/// # Platform-specific
+/// - **Windows**: The id is a value of [`HMONITOR`][HMONITOR].
+/// - **macOS**: The id is a value of [`CGDirectDisplayID`][CGDirectDisplayID].
+///
+/// [HMONITOR]: https://learn.microsoft.com/en-us/windows/win32/gdi/hmonitor-and-the-device-context
+/// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DisplayId(PlatformDisplayId);
+
+unsafe impl Send for DisplayId {}
+unsafe impl Sync for DisplayId {}
+
+impl From<PlatformDisplayId> for DisplayId {
+    fn from(value: PlatformDisplayId) -> Self {
+        Self(value)
+    }
+}
 
 impl DisplayId {
-    pub fn as_u64(&self) -> u64 {
-        self.0 as _
+    /// Returns platform representation of the display id.
+    ///
+    /// # Safety
+    /// The display ID returned by this function might become invalid after the display is removed.
+    pub fn platform_id(&self) -> &PlatformDisplayId {
+        &self.0
     }
 }
 
@@ -33,7 +55,11 @@ pub struct Resolution {
 pub enum DisplayEvent {
     Added(DisplayId),
     Removed(DisplayId),
-    ConfigurationChanged(DisplayId),
+    ResolutionChanged {
+        id: DisplayId,
+        before: Resolution,
+        after: Resolution,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +85,7 @@ impl DisplayObserver {
         #[cfg(target_os = "windows")]
         {
             Ok(Self {
-                inner: windows::MonitorInner::new()?,
+                inner: windows::WindowsDisplayObserver::new()?,
             })
         }
         #[cfg(target_os = "macos")]
@@ -74,24 +100,25 @@ impl DisplayObserver {
         self.inner
     }
 
-    pub fn set_callback<F>(&self, callback: F) -> Result<(), Error>
+    pub fn set_callback<F>(&self, callback: F)
     where
         F: FnMut(DisplayEvent) + Send + 'static,
     {
-        self.inner.set_callback(Box::new(callback))?;
-
-        Ok(())
+        self.inner.set_callback(Box::new(callback));
     }
 
     /// Run the event loop.
+    /// Since macOS ui thread must be on main, this function must be called on main thread.
+    /// If you call this on non-main thread, this will panic.
     ///
     /// # Platform-specific
-    /// - **macOS**: This function must be called on main thread.
-    ///     And this will always return `Ok`.
+    /// - **macOS**: This will always return `Ok`.
     pub fn run(&self) -> Result<(), Error> {
         #[cfg(target_os = "windows")]
-        return self.inner.run();
-
+        {
+            self.inner.run()?;
+            Ok(())
+        }
         #[cfg(target_os = "macos")]
         {
             self.inner.run();
