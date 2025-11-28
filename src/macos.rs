@@ -24,12 +24,6 @@ pub enum MacOSError {
     CGError(CGError),
 }
 
-impl From<MacOSError> for crate::Error {
-    fn from(value: MacOSError) -> Self {
-        Self::PlatformError(value)
-    }
-}
-
 trait CGErrorToResult {
     fn into_result<T>(self, value: T) -> Result<T, MacOSError>;
 }
@@ -91,9 +85,19 @@ impl MacOSDisplay {
     pub fn is_mirrored(&self) -> bool {
         CGDisplayMirrorsDisplay(self.id) != kCGNullDirectDisplay
     }
+
+    pub fn get_primary_id(&self) -> Option<MacOSDisplayId> {
+        let primary_id = CGDisplayMirrorsDisplay(self.id);
+
+        if primary_id == kCGNullDirectDisplay {
+            None
+        } else {
+            Some(primary_id)
+        }
+    }
 }
 
-pub fn get_displays() -> Result<Vec<MacOSDisplay>, MacOSError> {
+pub fn get_displays() -> Result<Vec<Display>, MacOSError> {
     const MAX_DISPLAYS: u32 = 20;
     let mut active_displays = [0; MAX_DISPLAYS as _];
     let mut display_count = 0;
@@ -109,7 +113,7 @@ pub fn get_displays() -> Result<Vec<MacOSDisplay>, MacOSError> {
 
     let mut displays = Vec::new();
     for display_id in active_displays {
-        displays.push(MacOSDisplay::new(display_id));
+        displays.push(MacOSDisplay::new(display_id).into());
     }
 
     Ok(displays)
@@ -125,7 +129,7 @@ impl EventTracker {
         let displays = get_displays()?;
         let mut cached_size = HashMap::new();
 
-        for display in displays {
+        for display in displays.into_iter().map(Into::<MacOSDisplay>::into) {
             cached_size.insert(display.id(), display.size());
         }
 
@@ -145,7 +149,7 @@ impl EventTracker {
         let displays = get_displays()?;
         let mut new_cached_size = HashMap::new();
 
-        for display in displays {
+        for display in displays.into_iter().map(Into::<MacOSDisplay>::into) {
             new_cached_size.insert(display.id(), display.size());
         }
 
@@ -272,7 +276,7 @@ unsafe extern "C-unwind" fn display_callback(
             MayBeDisplayAvailable::NotAvailable { event }
         } else {
             MayBeDisplayAvailable::Available {
-                display: Display::new(MacOSDisplay::new(id)),
+                display: MacOSDisplay::new(id).into(),
                 event,
             }
         };

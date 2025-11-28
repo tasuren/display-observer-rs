@@ -7,12 +7,31 @@ pub mod windows;
 use macos::{
     MacOSDisplay as PlatformDisplay, MacOSDisplayId as PlatformDisplayId,
     MacOSDisplayObserver as PlatformDisplayObserver, MacOSError as PlatformError,
+    get_displays as get_platform_displays,
 };
 #[cfg(target_os = "windows")]
 use windows::{
     WindowsDisplayId as PlatformDisplayId, WindowsDisplayObserver as PlatformDisplayObserver,
     WindowsError as PlatformError,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Initialization failed.")]
+    InitializationError(PlatformError),
+    #[error("A platform-specific error has occurred.")]
+    PlatformError(PlatformError),
+}
+
+impl From<PlatformError> for Error {
+    fn from(value: PlatformError) -> Self {
+        Self::PlatformError(value)
+    }
+}
+
+pub fn get_displays() -> Result<Vec<Display>, Error> {
+    Ok(get_platform_displays()?)
+}
 
 /// A unique identifier for a display.
 /// It is used to track displays across different platforms.
@@ -60,9 +79,27 @@ pub struct Size {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Display(PlatformDisplay);
 
+impl From<PlatformDisplay> for Display {
+    fn from(value: PlatformDisplay) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Display> for PlatformDisplay {
+    fn from(value: Display) -> Self {
+        value.0
+    }
+}
+
 impl Display {
-    pub fn new(inner: PlatformDisplay) -> Self {
-        Self(inner)
+    #[cfg(target_os = "windows")]
+    pub fn windows_display(&self) -> &windows::WindowsDisplay {
+        &self.0
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn macos_display(&self) -> &macos::MacOSDisplay {
+        &self.0
     }
 
     pub fn id(&self) -> DisplayId {
@@ -95,14 +132,6 @@ pub enum Event {
 pub enum MayBeDisplayAvailable {
     Available { display: Display, event: Event },
     NotAvailable { event: Event },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("Initialization failed.")]
-    InitializationError(PlatformError),
-    #[error("A platform-specific error has occurred.")]
-    PlatformError(PlatformError),
 }
 
 pub type DisplayEventCallback = Box<dyn FnMut(MayBeDisplayAvailable) + Send + 'static>;

@@ -18,12 +18,6 @@ use crate::{DisplayEvent, DisplayEventCallback, Size};
 
 pub type WindowsError = windows::core::Error;
 
-impl From<WindowsError> for crate::Error {
-    fn from(value: WindowsError) -> Self {
-        Self::PlatformError(value)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct WindowsDisplayId {
     name: OsString,
