@@ -49,7 +49,13 @@ impl WindowsDisplayId {
         monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as _;
 
         unsafe { GetMonitorInfoW(handle, &raw mut monitor_info as _).ok()? };
-        let name = OsString::from_wide(&monitor_info.szDevice);
+
+        let name_slice = &monitor_info.szDevice;
+        let len = name_slice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(name_slice.len());
+        let name = OsString::from_wide(&monitor_info.szDevice[..len]);
 
         Ok(Self {
             name: Arc::new(name),
@@ -116,7 +122,7 @@ fn is_display_mirrored(device_name: &OsStr) -> Result<bool, WindowsError> {
         source_name.header.id = path.sourceInfo.id;
 
         if unsafe { DisplayConfigGetDeviceInfo(&mut source_name.header as *mut _) }
-            == windows::Win32::Foundation::ERROR_SUCCESS.0 as i32
+            == ERROR_SUCCESS.0 as i32
         {
             let name_slice = &source_name.viewGdiDeviceName;
             let len = name_slice
