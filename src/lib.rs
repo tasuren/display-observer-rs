@@ -132,7 +132,7 @@ impl Display {
     pub fn is_mirrored(&self) -> bool {
         #[cfg(target_os = "windows")]
         {
-            unimplemented!()
+            self.0.is_mirrored()
         }
         #[cfg(target_os = "macos")]
         {

@@ -83,6 +83,57 @@ fn enum_display_settings(device_name: &OsStr) -> Result<DEVMODEW, WindowsError> 
     Ok(devmode)
 }
 
+fn is_display_mirrored(device_name: &OsStr) -> Result<bool, WindowsError> {
+    let mut path_count = 0;
+    let mut mode_count = 0;
+    unsafe {
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+            .ok()?;
+    }
+
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+
+    unsafe {
+        QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut path_count,
+            paths.as_mut_ptr(),
+            &mut mode_count,
+            modes.as_mut_ptr(),
+            None,
+        )
+        .ok()?;
+    }
+
+    let mut match_count = 0;
+    for path in paths.iter().take(path_count as usize) {
+        let mut source_name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+
+        source_name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source_name.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+        source_name.header.adapterId = path.sourceInfo.adapterId;
+        source_name.header.id = path.sourceInfo.id;
+
+        if unsafe { DisplayConfigGetDeviceInfo(&mut source_name.header as *mut _) }
+            == windows::Win32::Foundation::ERROR_SUCCESS.0 as i32
+        {
+            let name_slice = &source_name.viewGdiDeviceName;
+            let len = name_slice
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(name_slice.len());
+            let name = OsString::from_wide(&name_slice[..len]);
+
+            if name == device_name {
+                match_count += 1;
+            }
+        }
+    }
+
+    Ok(match_count > 1)
+}
+
 impl From<POINTL> for Origin {
     fn from(value: POINTL) -> Self {
         Self {
@@ -119,6 +170,10 @@ impl WindowsDisplay {
         let height = devmode.dmPelsHeight as _;
 
         Ok(Size { width, height })
+    }
+
+    pub fn is_mirrored(&self) -> bool {
+        is_display_mirrored(self.id.device_name()).unwrap_or(false)
     }
 }
 
@@ -168,53 +223,72 @@ pub fn get_displays() -> Result<Vec<Display>, WindowsError> {
     Ok(monitors)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplayState {
+    size: Size,
+    mirrored: bool,
+}
+
 struct EventTracker {
-    cached_size: HashMap<WindowsDisplayId, Size>,
+    cached_state: HashMap<WindowsDisplayId, DisplayState>,
 }
 
 impl EventTracker {
     fn new() -> Result<Self, WindowsError> {
         let mut tracker = Self {
-            cached_size: HashMap::new(),
+            cached_state: HashMap::new(),
         };
-        tracker.cached_size = tracker.collect_new_cached_size()?;
+        tracker.cached_state = tracker.collect_new_cached_state()?;
 
         Ok(tracker)
     }
 
-    fn collect_new_cached_size(&self) -> Result<HashMap<WindowsDisplayId, Size>, WindowsError> {
+    fn collect_new_cached_state(
+        &self,
+    ) -> Result<HashMap<WindowsDisplayId, DisplayState>, WindowsError> {
         let displays = get_displays()?;
-        let mut cached_size = HashMap::new();
+        let mut cached_state = HashMap::new();
 
         for display in displays.into_iter().map(Into::<WindowsDisplay>::into) {
             let size = display.size()?;
-            cached_size.insert(display.id(), size);
+            let mirrored = display.is_mirrored();
+
+            cached_state.insert(display.id(), DisplayState { size, mirrored });
         }
 
-        Ok(cached_size)
+        Ok(cached_state)
     }
 
     fn track_events(&mut self) -> Result<SmallVec<[MayBeDisplayAvailable; 10]>, WindowsError> {
-        let new_cached_size = self.collect_new_cached_size();
-        let before = std::mem::replace(&mut self.cached_size, new_cached_size?);
+        let new_cached_state = self.collect_new_cached_state();
+        let before = std::mem::replace(&mut self.cached_state, new_cached_state?);
         let mut events = SmallVec::new();
 
-        for (id, before) in before.iter() {
+        for (id, before_state) in before.iter() {
             let make_display = || WindowsDisplay::new(id.clone()).into();
 
-            if let Some(after) = self.cached_size.get(id)
-                && before != after
-            {
-                events.push(MayBeDisplayAvailable::Available {
-                    display: make_display(),
-                    event: Event::SizeChanged {
-                        before: *before,
-                        after: *after,
-                    },
-                });
-            };
+            if let Some(after_state) = self.cached_state.get(id) {
+                if before_state.size != after_state.size {
+                    events.push(MayBeDisplayAvailable::Available {
+                        display: make_display(),
+                        event: Event::SizeChanged {
+                            before: before_state.size,
+                            after: after_state.size,
+                        },
+                    });
+                };
 
-            if !self.cached_size.contains_key(id) {
+                if before_state.mirrored != after_state.mirrored {
+                    events.push(MayBeDisplayAvailable::Available {
+                        display: make_display(),
+                        event: if after_state.mirrored {
+                            Event::Mirrored
+                        } else {
+                            Event::UnMirrored
+                        },
+                    });
+                }
+            } else {
                 events.push(MayBeDisplayAvailable::NotAvailable {
                     event: Event::Removed {
                         id: id.clone().into(),
@@ -223,7 +297,7 @@ impl EventTracker {
             }
         }
 
-        for id in self.cached_size.keys() {
+        for id in self.cached_state.keys() {
             let make_display = || WindowsDisplay::new(id.clone()).into();
 
             if !before.contains_key(id) {
