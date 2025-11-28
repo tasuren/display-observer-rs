@@ -4,13 +4,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use objc2_core_foundation::CGSize;
+use objc2_core_foundation::{CGPoint, CGSize};
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
+    CGDirectDisplayID, CGDisplayBounds, CGDisplayChangeSummaryFlags, CGDisplayIsMain,
+    CGDisplayMirrorsDisplay, CGDisplayRegisterReconfigurationCallback,
     CGDisplayRemoveReconfigurationCallback, CGDisplayScreenSize, CGError, CGGetActiveDisplayList,
+    kCGNullDirectDisplay,
 };
 
-use crate::{DisplayEvent, DisplayEventCallback, Resolution};
+use crate::{DisplayEvent, DisplayEventCallback, Origin, Size};
 
 pub type MacOSDisplayId = CGDirectDisplayID;
 
@@ -42,7 +44,7 @@ impl CGErrorToResult for CGError {
     }
 }
 
-impl From<CGSize> for Resolution {
+impl From<CGSize> for Size {
     fn from(value: CGSize) -> Self {
         Self {
             width: value.width as _,
@@ -51,7 +53,46 @@ impl From<CGSize> for Resolution {
     }
 }
 
-fn get_displays() -> Result<HashMap<MacOSDisplayId, Resolution>, MacOSError> {
+impl From<CGPoint> for Origin {
+    fn from(value: CGPoint) -> Self {
+        Self {
+            x: value.x as _,
+            y: value.y as _,
+        }
+    }
+}
+
+pub struct MacOSDisplay {
+    pub(crate) id: MacOSDisplayId,
+}
+
+impl MacOSDisplay {
+    pub fn new(id: MacOSDisplayId) -> Self {
+        Self { id }
+    }
+
+    pub fn id(&self) -> MacOSDisplayId {
+        self.id
+    }
+
+    pub fn origin(&self) -> Origin {
+        CGDisplayBounds(self.id).origin.into()
+    }
+
+    pub fn size(&self) -> Size {
+        CGDisplayBounds(self.id).size.into()
+    }
+
+    pub fn is_primary(&self) -> bool {
+        CGDisplayIsMain(self.id)
+    }
+
+    pub fn is_mirrored(&self) -> bool {
+        CGDisplayMirrorsDisplay(self.id) != kCGNullDirectDisplay
+    }
+}
+
+fn get_displays() -> Result<HashMap<MacOSDisplayId, Size>, MacOSError> {
     const MAX_DISPLAYS: u32 = 20;
     let mut active_displays = [0; MAX_DISPLAYS as _];
     let mut display_count = 0;
@@ -75,14 +116,14 @@ fn get_displays() -> Result<HashMap<MacOSDisplayId, Resolution>, MacOSError> {
 }
 
 #[derive(Default)]
-struct EventTracker(HashMap<MacOSDisplayId, Resolution>);
+struct EventTracker(HashMap<MacOSDisplayId, Size>);
 
 impl EventTracker {
     fn new() -> Result<Self, MacOSError> {
         Ok(Self(get_displays()?))
     }
 
-    fn add(&mut self, id: MacOSDisplayId) -> Resolution {
+    fn add(&mut self, id: MacOSDisplayId) -> Size {
         let resolution = CGDisplayScreenSize(id).into();
         self.0.insert(id, resolution);
         resolution
@@ -99,7 +140,7 @@ impl EventTracker {
             if let Some(after) = self.0.get(key)
                 && before != after
             {
-                return Ok(Some(DisplayEvent::ResolutionChanged {
+                return Ok(Some(DisplayEvent::SizeChanged {
                     id: (*key).into(),
                     before: *before,
                     after: *after,
@@ -202,6 +243,10 @@ unsafe extern "C-unwind" fn display_callback(
         } else if flags.contains(CGDisplayChangeSummaryFlags::RemoveFlag) {
             user_info.tracker.remove(id);
             DisplayEvent::Removed { id: id.into() }
+        } else if flags.contains(CGDisplayChangeSummaryFlags::MirrorFlag) {
+            DisplayEvent::Mirrored { id: id.into() }
+        } else if flags.contains(CGDisplayChangeSummaryFlags::UnMirrorFlag) {
+            DisplayEvent::UnMirrored { id: id.into() }
         } else if flags.contains(CGDisplayChangeSummaryFlags::SetModeFlag) {
             if let Ok(Some(event)) = user_info.tracker.track_resolution_changed() {
                 event

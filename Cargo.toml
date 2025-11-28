@@ -1,6 +1,6 @@
 [package]
-name = "display-observer"
-description = "The library for observing information about displays."
+name = "display-config"
+description = "A crate providing functions related to display configuration."
 version = "0.1.0-alpha0"
 edition = "2024"
 authors = ["Takagi Tasuku <tasuren@outlook.jp>"]
@@ -11,7 +11,6 @@ categories = ["os::windows-apis", "os::macos-apis"]
 
 [dependencies]
 thiserror = "2"
-display-info = "0.5.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
@@ -24,7 +23,12 @@ features = ["CFCGTypes"]
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-graphics]
 version = "0.3.2"
 default-features = false
-features = ["CGError", "CGDirectDisplay", "CGDisplayConfiguration"]
+features = [
+    "libc",
+    "CGError",
+    "CGDirectDisplay",
+    "CGDisplayConfiguration",
+]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
 version = "0.3.2"

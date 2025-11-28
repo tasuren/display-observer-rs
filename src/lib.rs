@@ -4,12 +4,12 @@ pub mod macos;
 pub mod windows;
 
 #[cfg(target_os = "macos")]
-pub use macos::{
-    MacOSDisplayId as PlatformDisplayId, MacOSDisplayObserver as PlatformDisplayObserver,
-    MacOSError as PlatformError,
+use macos::{
+    MacOSDisplay as PlatformDisplay, MacOSDisplayId as PlatformDisplayId,
+    MacOSDisplayObserver as PlatformDisplayObserver, MacOSError as PlatformError,
 };
 #[cfg(target_os = "windows")]
-pub use windows::{
+use windows::{
     WindowsDisplayId as PlatformDisplayId, WindowsDisplayObserver as PlatformDisplayObserver,
     WindowsError as PlatformError,
 };
@@ -46,24 +46,52 @@ impl DisplayId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resolution {
+pub struct Origin {
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
     pub width: u32,
     pub height: u32,
+}
+
+pub struct Display(PlatformDisplay);
+
+impl Display {
+    pub fn new(inner: PlatformDisplay) -> Self {
+        Self(inner)
+    }
+
+    pub fn size(&self) -> Size {
+        self.0.size()
+    }
+
+    pub fn is_mirrored(&self) -> bool {
+        self.0.is_mirrored()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum DisplayEvent {
     Added {
         id: DisplayId,
-        resolution: Resolution,
+        resolution: Size,
     },
     Removed {
         id: DisplayId,
     },
-    ResolutionChanged {
+    SizeChanged {
         id: DisplayId,
-        before: Resolution,
-        after: Resolution,
+        before: Size,
+        after: Size,
+    },
+    Mirrored {
+        id: DisplayId,
+    },
+    UnMirrored {
+        id: DisplayId,
     },
 }
 

@@ -14,7 +14,7 @@ use windows::{
     core::{BOOL, w},
 };
 
-use crate::{DisplayEvent, DisplayEventCallback, Resolution};
+use crate::{DisplayEvent, DisplayEventCallback, Size};
 
 pub type WindowsError = windows::core::Error;
 
@@ -69,7 +69,7 @@ impl WindowsDisplayId {
     }
 }
 
-impl From<RECT> for Resolution {
+impl From<RECT> for Size {
     fn from(value: RECT) -> Self {
         Self {
             width: value.right as _,
@@ -84,7 +84,7 @@ unsafe extern "system" fn monitor_enum_proc(
     rect: *mut RECT,
     user_data: LPARAM,
 ) -> BOOL {
-    let monitors_ptr = user_data.0 as *mut HashMap<WindowsDisplayId, Resolution>;
+    let monitors_ptr = user_data.0 as *mut HashMap<WindowsDisplayId, Size>;
     if monitors_ptr.is_null() || rect.is_null() {
         return false.into();
     }
@@ -93,13 +93,13 @@ unsafe extern "system" fn monitor_enum_proc(
     let rect = unsafe { *rect };
 
     if let Ok(id) = WindowsDisplayId::from_handle(h_monitor) {
-        monitors.insert(id, Resolution::from(rect));
+        monitors.insert(id, Size::from(rect));
     }
 
     true.into()
 }
 
-fn get_monitors() -> Result<HashMap<WindowsDisplayId, Resolution>, WindowsError> {
+fn get_monitors() -> Result<HashMap<WindowsDisplayId, Size>, WindowsError> {
     let mut monitors = HashMap::new();
 
     unsafe {
@@ -115,7 +115,7 @@ fn get_monitors() -> Result<HashMap<WindowsDisplayId, Resolution>, WindowsError>
     Ok(monitors)
 }
 
-struct EventTracker(HashMap<WindowsDisplayId, Resolution>);
+struct EventTracker(HashMap<WindowsDisplayId, Size>);
 
 impl EventTracker {
     fn new() -> Result<Self, WindowsError> {
@@ -130,7 +130,7 @@ impl EventTracker {
             if let Some(after) = self.0.get(id)
                 && before != after
             {
-                events.push(DisplayEvent::ResolutionChanged {
+                events.push(DisplayEvent::SizeChanged {
                     id: id.clone().into(),
                     before: *before,
                     after: *after,

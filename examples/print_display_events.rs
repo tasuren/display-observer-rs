@@ -1,16 +1,18 @@
-use display_observer::{DisplayEvent, DisplayObserver};
+use display_config::{DisplayEvent, DisplayObserver};
 
 fn main() {
     let monitor = DisplayObserver::new().expect("Failed to create the instance");
 
     monitor.set_callback(|event| match event {
         DisplayEvent::Added { id, resolution } => {
-            println!("Display added: {id:?}, resolution = {resolution:?}")
+            println!("Added: {id:?}, resolution = {resolution:?}")
         }
-        DisplayEvent::Removed { id } => println!("Display removed: {id:?}"),
-        DisplayEvent::ResolutionChanged { id, before, after } => {
-            println!("Display resolution changed: {id:?}, before = {before:?}, after = {after:?}")
+        DisplayEvent::Removed { id } => println!("Removed: {id:?}"),
+        DisplayEvent::SizeChanged { id, before, after } => {
+            println!("SizeChanged: {id:?}, before = {before:?}, after = {after:?}")
         }
+        DisplayEvent::Mirrored { id } => println!("Mirrored: {id:?}"),
+        DisplayEvent::UnMirrored { id } => println!("UnMirrored: {id:?}"),
     });
 
     monitor.run().expect("Failed to run the application");
