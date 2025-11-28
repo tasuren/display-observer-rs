@@ -23,12 +23,7 @@ features = ["CFCGTypes"]
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-graphics]
 version = "0.3.2"
 default-features = false
-features = [
-    "libc",
-    "CGError",
-    "CGDirectDisplay",
-    "CGDisplayConfiguration",
-]
+features = ["libc", "CGError", "CGDirectDisplay", "CGDisplayConfiguration"]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
 version = "0.3.2"
@@ -46,5 +41,9 @@ features = [
     "Win32_Graphics",
     "Win32_Graphics_Gdi",
     "Win32_System",
+    "Win32_System_LibraryLoader",
     "Win32_UI",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Devices",
+    "Win32_Devices_Display",
 ]

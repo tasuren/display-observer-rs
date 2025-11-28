@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    ffi::{OsString, c_void},
-    os::windows::ffi::OsStringExt,
+    ffi::{OsStr, OsString, c_void},
+    os::windows::ffi::{OsStrExt, OsStringExt},
     sync::{Arc, Mutex},
 };
 
@@ -11,16 +11,16 @@ use windows::{
         Devices::Display::*, Foundation::*, Graphics::Gdi::*, System::LibraryLoader::*,
         UI::WindowsAndMessaging::*,
     },
-    core::{BOOL, w},
+    core::{BOOL, PCWSTR, w},
 };
 
-use crate::{DisplayEvent, DisplayEventCallback, Size};
+use crate::{Display, DisplayEventCallback, Event, MayBeDisplayAvailable, Origin, Size};
 
 pub type WindowsError = windows::core::Error;
 
 #[derive(Debug, Clone)]
 pub struct WindowsDisplayId {
-    name: OsString,
+    name: Arc<OsString>,
 }
 
 impl std::hash::Hash for WindowsDisplayId {
@@ -39,7 +39,9 @@ impl Eq for WindowsDisplayId {}
 
 impl WindowsDisplayId {
     pub fn new(name: OsString) -> Self {
-        Self { name }
+        Self {
+            name: Arc::new(name),
+        }
     }
 
     pub fn from_handle(handle: HMONITOR) -> Result<Self, WindowsError> {
@@ -49,7 +51,9 @@ impl WindowsDisplayId {
         unsafe { GetMonitorInfoW(handle, &raw mut monitor_info as _).ok()? };
         let name = OsString::from_wide(&monitor_info.szDevice);
 
-        Ok(Self { name })
+        Ok(Self {
+            name: Arc::new(name),
+        })
     }
 
     /// Get device identification string. This is also called device path.
@@ -58,8 +62,63 @@ impl WindowsDisplayId {
     /// See [Microsoft's documentation][docs] for more details.
     ///
     /// [docs]: https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats#dos-device-paths
-    pub fn name(&self) -> &OsString {
+    pub fn device_name(&self) -> &OsStr {
         &self.name
+    }
+}
+
+fn enum_display_settings(device_name: &OsStr) -> Result<DEVMODEW, WindowsError> {
+    let device_name: Vec<u16> = device_name.encode_wide().collect();
+    let mut devmode = DEVMODEW::default();
+
+    unsafe {
+        EnumDisplaySettingsW(
+            PCWSTR(device_name.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &raw mut devmode,
+        )
+        .ok()?;
+    };
+
+    Ok(devmode)
+}
+
+impl From<POINTL> for Origin {
+    fn from(value: POINTL) -> Self {
+        Self {
+            x: value.x as _,
+            y: value.y as _,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsDisplay {
+    id: WindowsDisplayId,
+}
+
+impl WindowsDisplay {
+    pub fn new(id: WindowsDisplayId) -> Self {
+        Self { id }
+    }
+
+    pub fn id(&self) -> WindowsDisplayId {
+        self.id.clone()
+    }
+
+    pub fn origin(&self) -> Result<Origin, WindowsError> {
+        let devmode = enum_display_settings(self.id.device_name())?;
+        let pos = unsafe { devmode.Anonymous1.Anonymous2.dmPosition };
+
+        Ok(pos.into())
+    }
+
+    pub fn size(&self) -> Result<Size, WindowsError> {
+        let devmode = enum_display_settings(self.id.device_name())?;
+        let width = devmode.dmPelsWidth as _;
+        let height = devmode.dmPelsHeight as _;
+
+        Ok(Size { width, height })
     }
 }
 
@@ -72,29 +131,29 @@ impl From<RECT> for Size {
     }
 }
 
+type EnumDisplayMonitorsUserData = Vec<Display>;
+
 unsafe extern "system" fn monitor_enum_proc(
     h_monitor: HMONITOR,
     _hdc: HDC,
     rect: *mut RECT,
     user_data: LPARAM,
 ) -> BOOL {
-    let monitors_ptr = user_data.0 as *mut HashMap<WindowsDisplayId, Size>;
+    let monitors_ptr = user_data.0 as *mut EnumDisplayMonitorsUserData;
     if monitors_ptr.is_null() || rect.is_null() {
         return false.into();
     }
 
     let monitors = unsafe { &mut *monitors_ptr };
-    let rect = unsafe { *rect };
-
     if let Ok(id) = WindowsDisplayId::from_handle(h_monitor) {
-        monitors.insert(id, Size::from(rect));
+        monitors.push(WindowsDisplay::new(id).into());
     }
 
     true.into()
 }
 
-fn get_monitors() -> Result<HashMap<WindowsDisplayId, Size>, WindowsError> {
-    let mut monitors = HashMap::new();
+pub fn get_displays() -> Result<Vec<Display>, WindowsError> {
+    let mut monitors: EnumDisplayMonitorsUserData = Default::default();
 
     unsafe {
         EnumDisplayMonitors(
@@ -109,40 +168,68 @@ fn get_monitors() -> Result<HashMap<WindowsDisplayId, Size>, WindowsError> {
     Ok(monitors)
 }
 
-struct EventTracker(HashMap<WindowsDisplayId, Size>);
+struct EventTracker {
+    cached_size: HashMap<WindowsDisplayId, Size>,
+}
 
 impl EventTracker {
     fn new() -> Result<Self, WindowsError> {
-        Ok(Self(get_monitors()?))
+        let mut tracker = Self {
+            cached_size: HashMap::new(),
+        };
+        tracker.cached_size = tracker.collect_new_cached_size()?;
+
+        Ok(tracker)
     }
 
-    fn track_events(&mut self) -> Result<SmallVec<[DisplayEvent; 10]>, WindowsError> {
-        let before = std::mem::replace(&mut self.0, get_monitors()?);
+    fn collect_new_cached_size(&self) -> Result<HashMap<WindowsDisplayId, Size>, WindowsError> {
+        let displays = get_displays()?;
+        let mut cached_size = HashMap::new();
+
+        for display in displays.into_iter().map(Into::<WindowsDisplay>::into) {
+            let size = display.size()?;
+            cached_size.insert(display.id(), size);
+        }
+
+        Ok(cached_size)
+    }
+
+    fn track_events(&mut self) -> Result<SmallVec<[MayBeDisplayAvailable; 10]>, WindowsError> {
+        let new_cached_size = self.collect_new_cached_size();
+        let before = std::mem::replace(&mut self.cached_size, new_cached_size?);
         let mut events = SmallVec::new();
 
         for (id, before) in before.iter() {
-            if let Some(after) = self.0.get(id)
+            let make_display = || WindowsDisplay::new(id.clone()).into();
+
+            if let Some(after) = self.cached_size.get(id)
                 && before != after
             {
-                events.push(DisplayEvent::SizeChanged {
-                    id: id.clone().into(),
-                    before: *before,
-                    after: *after,
+                events.push(MayBeDisplayAvailable::Available {
+                    display: make_display(),
+                    event: Event::SizeChanged {
+                        before: *before,
+                        after: *after,
+                    },
                 });
             };
 
-            if !self.0.contains_key(id) {
-                events.push(DisplayEvent::Removed {
-                    id: id.clone().into(),
+            if !self.cached_size.contains_key(id) {
+                events.push(MayBeDisplayAvailable::NotAvailable {
+                    event: Event::Removed {
+                        id: id.clone().into(),
+                    },
                 });
             }
         }
 
-        for (id, resolution) in self.0.iter() {
+        for id in self.cached_size.keys() {
+            let make_display = || WindowsDisplay::new(id.clone()).into();
+
             if !before.contains_key(id) {
-                events.push(DisplayEvent::Added {
-                    id: id.clone().into(),
-                    resolution: *resolution,
+                events.push(MayBeDisplayAvailable::Available {
+                    display: make_display(),
+                    event: Event::Added,
                 });
             }
         }
@@ -273,7 +360,7 @@ fn process_window_message(
     _wparam: WPARAM,
     _lparam: LPARAM,
     ctx: &mut ObserverContext,
-) -> Result<Option<SmallVec<[DisplayEvent; 10]>>, WindowsError> {
+) -> Result<Option<SmallVec<[MayBeDisplayAvailable; 10]>>, WindowsError> {
     Ok(match msg {
         WM_DISPLAYCHANGE => Some(ctx.tracker.track_events()?),
         _ => None,

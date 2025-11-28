@@ -11,8 +11,9 @@ use macos::{
 };
 #[cfg(target_os = "windows")]
 use windows::{
-    WindowsDisplayId as PlatformDisplayId, WindowsDisplayObserver as PlatformDisplayObserver,
-    WindowsError as PlatformError,
+    WindowsDisplay as PlatformDisplay, WindowsDisplayId as PlatformDisplayId,
+    WindowsDisplayObserver as PlatformDisplayObserver, WindowsError as PlatformError,
+    get_displays as get_platform_displays,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -106,16 +107,37 @@ impl Display {
         self.0.id().into()
     }
 
-    pub fn origin(&self) -> Origin {
-        self.0.origin()
+    pub fn origin(&self) -> Result<Origin, Error> {
+        #[cfg(target_os = "windows")]
+        {
+            Ok(self.0.origin()?)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Ok(self.0.origin())
+        }
     }
 
-    pub fn size(&self) -> Size {
-        self.0.size()
+    pub fn size(&self) -> Result<Size, Error> {
+        #[cfg(target_os = "windows")]
+        {
+            Ok(self.0.size()?)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Ok(self.0.size())
+        }
     }
 
     pub fn is_mirrored(&self) -> bool {
-        self.0.is_mirrored()
+        #[cfg(target_os = "windows")]
+        {
+            unimplemented!()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.0.is_mirrored()
+        }
     }
 }
 
