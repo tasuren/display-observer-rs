@@ -12,7 +12,7 @@ use objc2_core_graphics::{
     kCGNullDirectDisplay,
 };
 
-use crate::{DisplayEvent, DisplayEventCallback, Origin, Size};
+use crate::{Display, DisplayEventCallback, Event, MayBeDisplayAvailable, Origin, Size};
 
 pub type MacOSDisplayId = CGDirectDisplayID;
 
@@ -62,6 +62,7 @@ impl From<CGPoint> for Origin {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacOSDisplay {
     pub(crate) id: MacOSDisplayId,
 }
@@ -92,7 +93,7 @@ impl MacOSDisplay {
     }
 }
 
-fn get_displays() -> Result<HashMap<MacOSDisplayId, Size>, MacOSError> {
+pub fn get_displays() -> Result<Vec<MacOSDisplay>, MacOSError> {
     const MAX_DISPLAYS: u32 = 20;
     let mut active_displays = [0; MAX_DISPLAYS as _];
     let mut display_count = 0;
@@ -106,42 +107,55 @@ fn get_displays() -> Result<HashMap<MacOSDisplayId, Size>, MacOSError> {
         .into_result(())?;
     }
 
-    let mut displays = HashMap::new();
+    let mut displays = Vec::new();
     for display_id in active_displays {
-        let size = CGDisplayScreenSize(display_id);
-        displays.insert(display_id, size.into());
+        displays.push(MacOSDisplay::new(display_id));
     }
 
     Ok(displays)
 }
 
 #[derive(Default)]
-struct EventTracker(HashMap<MacOSDisplayId, Size>);
+struct EventTracker {
+    cached_size: HashMap<MacOSDisplayId, Size>,
+}
 
 impl EventTracker {
     fn new() -> Result<Self, MacOSError> {
-        Ok(Self(get_displays()?))
+        let displays = get_displays()?;
+        let mut cached_size = HashMap::new();
+
+        for display in displays {
+            cached_size.insert(display.id(), display.size());
+        }
+
+        Ok(Self { cached_size })
     }
 
-    fn add(&mut self, id: MacOSDisplayId) -> Size {
+    fn add(&mut self, id: MacOSDisplayId) {
         let resolution = CGDisplayScreenSize(id).into();
-        self.0.insert(id, resolution);
-        resolution
+        self.cached_size.insert(id, resolution);
     }
 
     fn remove(&mut self, id: MacOSDisplayId) {
-        self.0.remove(&id);
+        self.cached_size.remove(&id);
     }
 
-    fn track_resolution_changed(&mut self) -> Result<Option<DisplayEvent>, MacOSError> {
-        let before = std::mem::replace(&mut self.0, get_displays()?);
+    fn track_resolution_changed(&mut self) -> Result<Option<Event>, MacOSError> {
+        let displays = get_displays()?;
+        let mut new_cached_size = HashMap::new();
 
-        for (key, before) in before.iter() {
-            if let Some(after) = self.0.get(key)
+        for display in displays {
+            new_cached_size.insert(display.id(), display.size());
+        }
+
+        let before = std::mem::replace(&mut self.cached_size, new_cached_size);
+
+        for (id, before) in before.iter() {
+            if let Some(after) = self.cached_size.get(id)
                 && before != after
             {
-                return Ok(Some(DisplayEvent::SizeChanged {
-                    id: (*key).into(),
+                return Ok(Some(Event::SizeChanged {
                     before: *before,
                     after: *after,
                 }));
@@ -235,18 +249,15 @@ unsafe extern "C-unwind" fn display_callback(
 
     if user_info.callback.is_some() {
         let event = if flags.contains(CGDisplayChangeSummaryFlags::AddFlag) {
-            let resolution = user_info.tracker.add(id);
-            DisplayEvent::Added {
-                id: id.into(),
-                resolution,
-            }
+            user_info.tracker.add(id);
+            Event::Added
         } else if flags.contains(CGDisplayChangeSummaryFlags::RemoveFlag) {
             user_info.tracker.remove(id);
-            DisplayEvent::Removed { id: id.into() }
+            Event::Removed { id: id.into() }
         } else if flags.contains(CGDisplayChangeSummaryFlags::MirrorFlag) {
-            DisplayEvent::Mirrored { id: id.into() }
+            Event::Mirrored
         } else if flags.contains(CGDisplayChangeSummaryFlags::UnMirrorFlag) {
-            DisplayEvent::UnMirrored { id: id.into() }
+            Event::UnMirrored
         } else if flags.contains(CGDisplayChangeSummaryFlags::SetModeFlag) {
             if let Ok(Some(event)) = user_info.tracker.track_resolution_changed() {
                 event
@@ -255,6 +266,15 @@ unsafe extern "C-unwind" fn display_callback(
             }
         } else {
             return;
+        };
+
+        let event = if matches!(event, Event::Removed { .. }) {
+            MayBeDisplayAvailable::NotAvailable { event }
+        } else {
+            MayBeDisplayAvailable::Available {
+                display: Display::new(MacOSDisplay::new(id)),
+                event,
+            }
         };
 
         (user_info.callback.as_mut().unwrap())(event);

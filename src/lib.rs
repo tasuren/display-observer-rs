@@ -57,11 +57,20 @@ pub struct Size {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Display(PlatformDisplay);
 
 impl Display {
     pub fn new(inner: PlatformDisplay) -> Self {
         Self(inner)
+    }
+
+    pub fn id(&self) -> DisplayId {
+        self.0.id().into()
+    }
+
+    pub fn origin(&self) -> Origin {
+        self.0.origin()
     }
 
     pub fn size(&self) -> Size {
@@ -74,25 +83,18 @@ impl Display {
 }
 
 #[derive(Debug, Clone)]
-pub enum DisplayEvent {
-    Added {
-        id: DisplayId,
-        resolution: Size,
-    },
-    Removed {
-        id: DisplayId,
-    },
-    SizeChanged {
-        id: DisplayId,
-        before: Size,
-        after: Size,
-    },
-    Mirrored {
-        id: DisplayId,
-    },
-    UnMirrored {
-        id: DisplayId,
-    },
+pub enum Event {
+    Added,
+    Removed { id: DisplayId },
+    SizeChanged { before: Size, after: Size },
+    Mirrored,
+    UnMirrored,
+}
+
+#[derive(Clone)]
+pub enum MayBeDisplayAvailable {
+    Available { display: Display, event: Event },
+    NotAvailable { event: Event },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,7 +105,7 @@ pub enum Error {
     PlatformError(PlatformError),
 }
 
-pub type DisplayEventCallback = Box<dyn FnMut(DisplayEvent) + Send + 'static>;
+pub type DisplayEventCallback = Box<dyn FnMut(MayBeDisplayAvailable) + Send + 'static>;
 
 pub struct DisplayObserver {
     inner: PlatformDisplayObserver,
@@ -126,7 +128,7 @@ impl DisplayObserver {
 
     pub fn set_callback<F>(&self, callback: F)
     where
-        F: FnMut(DisplayEvent) + Send + 'static,
+        F: FnMut(MayBeDisplayAvailable) + Send + 'static,
     {
         self.inner.set_callback(Box::new(callback));
     }

@@ -1,19 +1,23 @@
-use display_config::{DisplayEvent, DisplayObserver};
+use display_config::{DisplayObserver, MayBeDisplayAvailable};
+
+fn on_event(event: MayBeDisplayAvailable) {
+    match event {
+        MayBeDisplayAvailable::Available { display, event } => {
+            println!(
+                "{event:?} ... id = {:?}, origin = {:?}, size = {:?}",
+                display.id(),
+                display.origin(),
+                display.size()
+            );
+        }
+        MayBeDisplayAvailable::NotAvailable { event } => {
+            println!("{event:?} ... display is not available");
+        }
+    }
+}
 
 fn main() {
     let monitor = DisplayObserver::new().expect("Failed to create the instance");
-
-    monitor.set_callback(|event| match event {
-        DisplayEvent::Added { id, resolution } => {
-            println!("Added: {id:?}, resolution = {resolution:?}")
-        }
-        DisplayEvent::Removed { id } => println!("Removed: {id:?}"),
-        DisplayEvent::SizeChanged { id, before, after } => {
-            println!("SizeChanged: {id:?}, before = {before:?}, after = {after:?}")
-        }
-        DisplayEvent::Mirrored { id } => println!("Mirrored: {id:?}"),
-        DisplayEvent::UnMirrored { id } => println!("UnMirrored: {id:?}"),
-    });
-
+    monitor.set_callback(on_event);
     monitor.run().expect("Failed to run the application");
 }
