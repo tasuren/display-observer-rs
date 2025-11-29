@@ -10,6 +10,6 @@ fn main() {
         println!("  Size: {:?}", display.size());
         println!("  Is Mirrored: {:?}", display.is_mirrored());
 
-        println!("");
+        println!();
     }
 }
