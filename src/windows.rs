@@ -317,12 +317,12 @@ unsafe extern "system" fn monitor_enum_proc(
     rect: *mut RECT,
     user_data: LPARAM,
 ) -> BOOL {
-    let monitors_ptr = user_data.0 as *mut EnumDisplayMonitorsUserData;
-    if monitors_ptr.is_null() || rect.is_null() {
+    if rect.is_null() {
         return false.into();
     }
 
-    let monitors = unsafe { &mut *monitors_ptr };
+    // SAFETY: `user_data` is guaranteed to be a valid pointer to `EnumDisplayMonitorsUserData`.
+    let monitors = unsafe { &mut *(user_data.0 as *mut EnumDisplayMonitorsUserData) };
     if let Ok(id) = WindowsDisplayId::from_handle(h_monitor) {
         monitors.push(WindowsDisplay::new(id).into());
     }
