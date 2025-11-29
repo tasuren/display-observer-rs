@@ -16,10 +16,13 @@ use windows::{
     get_displays as get_platform_displays,
 };
 
+/// The error type for this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An error occurred during initialization.
     #[error("Initialization failed.")]
     InitializationError(PlatformError),
+    /// An error occurred in the platform-specific implementation.
     #[error("A platform-specific error has occurred.")]
     PlatformError(PlatformError),
 }
@@ -30,6 +33,13 @@ impl From<PlatformError> for Error {
     }
 }
 
+/// Get all available displays.
+///
+/// # Returns
+/// A list of [`Display`]s.
+///
+/// # Errors
+/// Returns [`Error`] if the platform-specific implementation fails.
 pub fn get_displays() -> Result<Vec<Display>, Error> {
     Ok(get_platform_displays()?)
 }
@@ -65,18 +75,29 @@ impl DisplayId {
     }
 }
 
+/// A point on the screen.
+/// The origin is the top-left corner of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Origin {
+    /// The x coordinate.
     pub x: u32,
+    /// The y coordinate.
     pub y: u32,
 }
 
+/// The size of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
+    /// The width of the screen.
     pub width: u32,
+    /// The height of the screen.
     pub height: u32,
 }
 
+/// A display.
+///
+/// This struct provides a cross-platform interface to interact with displays.
+/// You can get the display's id, origin, size, and check if it's mirrored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Display(PlatformDisplay);
 
@@ -93,20 +114,24 @@ impl From<Display> for PlatformDisplay {
 }
 
 impl Display {
+    /// Get the Windows specific display implementation.
     #[cfg(target_os = "windows")]
     pub fn windows_display(&self) -> &windows::WindowsDisplay {
         &self.0
     }
 
+    /// Get the macOS specific display implementation.
     #[cfg(target_os = "macos")]
     pub fn macos_display(&self) -> &macos::MacOSDisplay {
         &self.0
     }
 
+    /// Get the unique identifier of the display.
     pub fn id(&self) -> DisplayId {
         self.0.id().into()
     }
 
+    /// Get the origin of the display.
     pub fn origin(&self) -> Result<Origin, Error> {
         #[cfg(target_os = "windows")]
         {
@@ -118,6 +143,7 @@ impl Display {
         }
     }
 
+    /// Get the size of the display.
     pub fn size(&self) -> Result<Size, Error> {
         #[cfg(target_os = "windows")]
         {
@@ -129,6 +155,7 @@ impl Display {
         }
     }
 
+    /// Check if the display is mirrored.
     pub fn is_mirrored(&self) -> Result<bool, Error> {
         #[cfg(target_os = "windows")]
         {
@@ -139,28 +166,63 @@ impl Display {
             Ok(self.0.is_mirrored())
         }
     }
+
+    /// Check if this display is the primary monitor.
+    pub fn is_primary(&self) -> Result<bool, Error> {
+        #[cfg(target_os = "windows")]
+        {
+            Ok(self.0.is_primary()?)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Ok(self.0.is_primary())
+        }
+    }
 }
 
+/// An event that occurs when the display configuration changes.
 #[derive(Debug, Clone)]
 pub enum Event {
+    /// A display was added.
     Added,
+    /// A display was removed.
     Removed { id: DisplayId },
+    /// The size of a display changed.
     SizeChanged { before: Size, after: Size },
+    /// The origin of a display changed.
     OriginChanged { before: Origin, after: Origin },
+    /// A display was mirrored.
     Mirrored,
+    /// A display was unmirrored.
     UnMirrored,
 }
 
+/// A wrapper around [`Event`] that provides the display if it is still available.
 #[derive(Clone)]
 pub enum MayBeDisplayAvailable {
+    /// The display is available.
     Available { display: Display, event: Event },
+    /// The display is not available (e.g. it was removed).
     NotAvailable { event: Event },
 }
 
+/// A callback function that is called when a display event occurs.
 pub type DisplayEventCallback = Box<dyn FnMut(MayBeDisplayAvailable) + Send + 'static>;
 
 pub struct DisplayObserver {
     inner: PlatformDisplayObserver,
+}
+
+impl From<PlatformDisplayObserver> for DisplayObserver {
+    fn from(inner: PlatformDisplayObserver) -> Self {
+        Self { inner }
+    }
+}
+
+impl From<DisplayObserver> for PlatformDisplayObserver {
+    fn from(value: DisplayObserver) -> Self {
+        value.inner
+    }
 }
 
 impl DisplayObserver {

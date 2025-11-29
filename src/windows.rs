@@ -16,8 +16,17 @@ use windows::{
 
 use crate::{Display, DisplayEventCallback, Event, MayBeDisplayAvailable, Origin, Size};
 
+/// The error type for Windows-specific operations.
+/// This is a type alias for [`windows::core::Error`][windows::core::Error].
+///
+/// [windows::core::Error]: https://docs.rs/windows/latest/windows/core/struct.Error.html
 pub type WindowsError = windows::core::Error;
 
+/// A Windows-specific unique identifier for a display.
+///
+/// This ID is based on the [device path][device path] of the display.
+///
+/// [device path]: https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats#dos-device-paths
 #[derive(Debug, Clone)]
 pub struct WindowsDisplayId {
     name: Arc<OsString>,
@@ -38,12 +47,17 @@ impl PartialEq for WindowsDisplayId {
 impl Eq for WindowsDisplayId {}
 
 impl WindowsDisplayId {
+    /// Creates a new `WindowsDisplayId` from a device name string.
     pub fn new(name: OsString) -> Self {
         Self {
             name: Arc::new(name),
         }
     }
 
+    /// Creates a `WindowsDisplayId` from a Windows `HMONITOR` handle.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `GetMonitorInfoW` fails.
     pub fn from_handle(handle: HMONITOR) -> Result<Self, WindowsError> {
         let mut monitor_info = MONITORINFOEXW::default();
         monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as _;
@@ -141,6 +155,25 @@ fn is_display_mirrored(device_name: &OsStr) -> Result<bool, WindowsError> {
     Ok(match_count > 1)
 }
 
+fn is_display_primary(device_name: &OsStr) -> Result<bool, WindowsError> {
+    let mut primary = false;
+    let mut data = PrimaryCheckData {
+        target_device_name: device_name,
+        is_primary_result: &mut primary,
+    };
+
+    unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(enum_primary_monitor_proc),
+            LPARAM(&raw mut data as *mut PrimaryCheckData as isize),
+        )
+        .ok()?;
+    }
+    Ok(primary)
+}
+
 impl From<POINTL> for Origin {
     fn from(value: POINTL) -> Self {
         Self {
@@ -159,20 +192,70 @@ impl From<RECT> for Size {
     }
 }
 
+/// A Windows-specific display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsDisplay {
     id: WindowsDisplayId,
 }
 
+// struct definitions at the top, after other `use` statements or similar
+struct PrimaryCheckData<'a> {
+    target_device_name: &'a OsStr,
+    is_primary_result: &'a mut bool,
+}
+
+// static callback function
+unsafe extern "system" fn enum_primary_monitor_proc(
+    hmonitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    // SAFETY: lparam is guaranteed to be a valid pointer to PrimaryCheckData.
+    let data = unsafe { &mut *(lparam.0 as *mut PrimaryCheckData) };
+    let target_device_name = data.target_device_name;
+    let is_primary_result = &mut data.is_primary_result;
+
+    let mut monitor_info = MONITORINFOEXW::default();
+    monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as _;
+
+    if unsafe {
+        GetMonitorInfoW(hmonitor, &raw mut monitor_info as _)
+            .ok()
+            .is_ok()
+    } {
+        let name_slice = &monitor_info.szDevice;
+        let len = name_slice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(name_slice.len());
+        let current_device_name = OsString::from_wide(&name_slice[..len]);
+
+        if current_device_name == target_device_name {
+            **is_primary_result = (monitor_info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0;
+            // Found the target monitor, stop enumeration
+            return false.into();
+        }
+    }
+
+    true.into()
+}
+
 impl WindowsDisplay {
+    /// Creates a new `WindowsDisplay` from a `WindowsDisplayId`.
     pub fn new(id: WindowsDisplayId) -> Self {
         Self { id }
     }
 
+    /// Get the unique identifier of the display.
     pub fn id(&self) -> WindowsDisplayId {
         self.id.clone()
     }
 
+    /// Get the origin (top-left corner) of the display in screen coordinates.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `EnumDisplaySettingsW` fails.
     pub fn origin(&self) -> Result<Origin, WindowsError> {
         let devmode = enum_display_settings(self.id.device_name())?;
         let pos = unsafe { devmode.Anonymous1.Anonymous2.dmPosition };
@@ -180,6 +263,10 @@ impl WindowsDisplay {
         Ok(pos.into())
     }
 
+    /// Get the current resolution (width and height) of the display.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `EnumDisplaySettingsW` fails.
     pub fn size(&self) -> Result<Size, WindowsError> {
         let devmode = enum_display_settings(self.id.device_name())?;
         let width = devmode.dmPelsWidth as _;
@@ -188,8 +275,22 @@ impl WindowsDisplay {
         Ok(Size { width, height })
     }
 
+    /// Check if this display is currently mirrored.
+    ///
+    /// If a display is mirrored, it means its content is identical to another display.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `GetDisplayConfigBufferSizes` or `QueryDisplayConfig` fails.
     pub fn is_mirrored(&self) -> Result<bool, WindowsError> {
         is_display_mirrored(self.id.device_name())
+    }
+
+    /// Check if this display is the primary monitor.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `EnumDisplayMonitors` or `GetMonitorInfoW` fails.
+    pub fn is_primary(&self) -> Result<bool, WindowsError> {
+        is_display_primary(self.id.device_name())
     }
 }
 
@@ -214,6 +315,7 @@ unsafe extern "system" fn monitor_enum_proc(
     true.into()
 }
 
+/// Get a list of all currently active Windows displays.
 pub fn get_displays() -> Result<Vec<Display>, WindowsError> {
     let mut monitors: EnumDisplayMonitorsUserData = Default::default();
 
@@ -339,6 +441,10 @@ struct ObserverContext {
     tracker: EventTracker,
 }
 
+/// A Windows-specific display observer that monitors changes to the display configuration.
+///
+/// This observer creates a hidden window to receive `WM_DISPLAYCHANGE` messages
+/// and uses device notification APIs to track display events.
 pub struct WindowsDisplayObserver {
     hwnd: HWND,
     h_notify: HDEVNOTIFY,
@@ -346,6 +452,14 @@ pub struct WindowsDisplayObserver {
 }
 
 impl WindowsDisplayObserver {
+    /// Creates a new `WindowsDisplayObserver`.
+    ///
+    /// This function sets up a hidden window and registers for device notifications
+    /// to begin observing display configuration changes.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if there is an issue creating the window,
+    /// registering for notifications, or collecting initial display information.
     pub fn new() -> Result<Self, WindowsError> {
         let h_instance = unsafe { GetModuleHandleW(None)? };
         let window_class_name = w!("DisplayMonitorClass");
@@ -412,16 +526,28 @@ impl WindowsDisplayObserver {
         })
     }
 
+    /// Sets the callback function to be invoked when a display event occurs.
+    ///
+    /// The provided callback will receive a [`MayBeDisplayAvailable`] enum,
+    /// indicating the nature of the display change and if the display is still available.
     pub fn set_callback(&self, callback: DisplayEventCallback) {
         let mut state = self.ctx.lock().unwrap();
         state.callback = Some(callback);
     }
 
+    /// Removes the currently set callback function.
+    /// After calling this, no display events will be dispatched.
     pub fn remove_callback(&self) {
         let mut state = self.ctx.lock().unwrap();
         state.callback = None;
     }
 
+    /// Runs the Windows message loop to start handling display events.
+    ///
+    /// This function will block the current thread and dispatch messages.
+    ///
+    /// # Errors
+    /// Returns a [`WindowsError`] if `GetMessageW` fails.
     pub fn run(&self) -> Result<(), WindowsError> {
         unsafe {
             let mut msg = MSG::default();

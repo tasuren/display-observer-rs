@@ -8,7 +8,8 @@ fn main() {
 
         println!("  Origin: {:?}", display.origin());
         println!("  Size: {:?}", display.size());
-        println!("  Is Mirrored: {:?}", display.is_mirrored());
+        println!("  Is mirrored: {:?}", display.is_mirrored());
+        println!("  Is primary: {:?}", display.is_primary());
 
         println!();
     }

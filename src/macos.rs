@@ -14,15 +14,15 @@ use smallvec::SmallVec;
 
 use crate::{Display, DisplayEventCallback, Event, MayBeDisplayAvailable, Origin, Size};
 
+/// The type alias for macOS display ID, which is [`CGDirectDisplayID`][CGDirectDisplayID].
+///
+/// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
 pub type MacOSDisplayId = CGDirectDisplayID;
 
-#[derive(Debug, thiserror::Error)]
-pub enum MacOSError {
-    #[error("Failed to load `NSApplication`.")]
-    NSApplicationLoadError,
-    #[error("`CGError` has occurred: {0:?}")]
-    CGError(CGError),
-}
+/// The error type for macOS-specific operations, which is [`CGError`][CGError].
+///
+/// [CGError]: https://developer.apple.com/documentation/coregraphics/cgerror?language=objc
+pub type MacOSError = CGError;
 
 trait CGErrorToResult {
     fn into_result<T>(self, value: T) -> Result<T, MacOSError>;
@@ -33,7 +33,7 @@ impl CGErrorToResult for CGError {
         if self == CGError::Success {
             Ok(value)
         } else {
-            Err(MacOSError::CGError(self))
+            Err(self)
         }
     }
 }
@@ -56,36 +56,54 @@ impl From<CGPoint> for Origin {
     }
 }
 
+/// A macOS-specific display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacOSDisplay {
     pub(crate) id: MacOSDisplayId,
 }
 
 impl MacOSDisplay {
+    /// Create a new `MacOSDisplay` from a [`CGDirectDisplayID`][CGDirectDisplayID].
+    ///
+    /// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
     pub fn new(id: MacOSDisplayId) -> Self {
         Self { id }
     }
 
+    /// Get the [`CGDirectDisplayID`][CGDirectDisplayID] of the display.
+    ///
+    /// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
     pub fn id(&self) -> MacOSDisplayId {
         self.id
     }
 
+    /// Get the origin (top-left corner) of the display in screen coordinates.
     pub fn origin(&self) -> Origin {
         CGDisplayBounds(self.id).origin.into()
     }
 
+    /// Get the current resolution (width and height) of the display.
     pub fn size(&self) -> Size {
         CGDisplayBounds(self.id).size.into()
     }
 
+    /// Check if this display is the primary (main) display.
     pub fn is_primary(&self) -> bool {
         CGDisplayIsMain(self.id)
     }
 
+    /// Check if this display is currently mirrored.
+    ///
+    /// If a display is mirrored, it means its content is identical to another display.
     pub fn is_mirrored(&self) -> bool {
         CGDisplayMirrorsDisplay(self.id) != kCGNullDirectDisplay
     }
 
+    /// Get the [`CGDirectDisplayID`][CGDirectDisplayID] of the primary display if this display is mirrored.
+    ///
+    /// Returns `None` if the display is not mirrored or is the primary display itself.
+    ///
+    /// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
     pub fn get_primary_id(&self) -> Option<MacOSDisplayId> {
         let primary_id = CGDisplayMirrorsDisplay(self.id);
 
@@ -97,6 +115,13 @@ impl MacOSDisplay {
     }
 }
 
+/// Get a list of all currently active macOS displays.
+///
+/// # Returns
+/// A `Result` containing a `Vec` of [`Display`] objects on success, or a [`MacOSError`] on failure.
+///
+/// # Errors
+/// This function can return a [`MacOSError`] if there's an issue with Core Graphics.
 pub fn get_displays() -> Result<Vec<Display>, MacOSError> {
     const MAX_DISPLAYS: u32 = 20;
     let mut active_displays = [0; MAX_DISPLAYS as _];
@@ -201,11 +226,24 @@ struct UserInfo {
     tracker: EventTracker,
 }
 
+/// A macOS-specific display observer that monitors changes to the display configuration.
+///
+/// This observer uses `CGDisplayRegisterReconfigurationCallback` to receive notifications
+/// about display changes. It also caches display information to track changes
+/// like resolution and origin, which are not directly provided by the callback.
 pub struct MacOSDisplayObserver {
     user_info: Arc<Mutex<UserInfo>>,
 }
 
 impl MacOSDisplayObserver {
+    /// Creates a new `MacOSDisplayObserver`.
+    ///
+    /// This function sets up the necessary Core Graphics callbacks to begin observing
+    /// display configuration changes.
+    ///
+    /// # Errors
+    /// Returns a [`MacOSError`] if there is an issue registering the callback
+    /// or collecting initial display information.
     pub fn new() -> Result<Self, MacOSError> {
         let user_info = Arc::new(Mutex::new(UserInfo {
             callback: None,
@@ -221,20 +259,28 @@ impl MacOSDisplayObserver {
         Ok(Self { user_info })
     }
 
+    /// Sets the callback function to be invoked when a display event occurs.
+    ///
+    /// The provided callback will receive a `MayBeDisplayAvailable` enum,
+    /// indicating the nature of the display change and if the display is still available.
     pub fn set_callback(&self, callback: DisplayEventCallback) {
         let mut user_info = self.user_info.lock().unwrap();
         user_info.callback = Some(callback);
     }
 
+    /// Removes the currently set callback function.
+    /// After calling this, no display events will be dispatched.
     pub fn remove_callback(&self) {
         let mut user_info = self.user_info.lock().unwrap();
         user_info.callback = None;
     }
 
-    /// Run the [`NSApplication`][NSApplication] and start handling events.
+    /// Runs the [`NSApplication`][NSApplication] event loop to start handling display events.
+    ///
+    /// This function will block the current thread and dispatch events.
     ///
     /// # Panics
-    /// It will panic on non-main thread.
+    /// This function must be called on the main thread, otherwise it will panic.
     ///
     /// [NSApplication]: https://developer.apple.com/documentation/appkit/nsapplication
     pub fn run(&self) {
