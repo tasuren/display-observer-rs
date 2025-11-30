@@ -249,7 +249,7 @@ unsafe extern "system" fn monitor_enum_proc(
 }
 
 /// Get a list of all currently active Windows displays.
-pub fn get_displays() -> Result<Vec<Display>, WindowsError> {
+pub fn get_windows_displays() -> Result<Vec<Display>, WindowsError> {
     let mut user_data: EnumDisplayMonitorsUserData = EnumDisplayMonitorsUserData {
         displays: Vec::new(),
         result: Ok(()),
@@ -283,7 +283,7 @@ impl EventTracker {
     }
 
     fn collect_new_cached_state(&self) -> Result<HashMap<WindowsDisplayId, Display>, WindowsError> {
-        let displays = get_displays()?;
+        let displays = get_windows_displays()?;
         let mut cached_state = HashMap::new();
 
         for display in displays {

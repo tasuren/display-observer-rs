@@ -13,7 +13,7 @@ use macos::{
 #[cfg(target_os = "windows")]
 use windows::{
     WindowsDisplayId as PlatformDisplayId, WindowsDisplayObserver as PlatformDisplayObserver,
-    WindowsError as PlatformError, get_displays as get_platform_displays,
+    WindowsError as PlatformError, get_windows_displays as get_platform_displays,
 };
 
 /// The error type for this crate.
