@@ -34,12 +34,6 @@ impl From<PlatformError> for Error {
 }
 
 /// Get all available displays.
-///
-/// # Returns
-/// A list of [`Display`]s.
-///
-/// # Errors
-/// Returns [`Error`] if the platform-specific implementation fails.
 pub fn get_displays() -> Result<Vec<Display>, Error> {
     Ok(get_platform_displays()?)
 }
@@ -55,9 +49,6 @@ pub fn get_displays() -> Result<Vec<Display>, Error> {
 /// [CGDirectDisplayID]: https://developer.apple.com/documentation/coregraphics/cgdirectdisplayid?language=objc
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DisplayId(PlatformDisplayId);
-
-unsafe impl Send for DisplayId {}
-unsafe impl Sync for DisplayId {}
 
 impl From<PlatformDisplayId> for DisplayId {
     fn from(value: PlatformDisplayId) -> Self {
