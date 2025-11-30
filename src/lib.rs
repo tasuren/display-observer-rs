@@ -5,15 +5,13 @@ pub mod windows;
 
 #[cfg(target_os = "macos")]
 use macos::{
-    MacOSDisplay as PlatformDisplay, MacOSDisplayId as PlatformDisplayId,
-    MacOSDisplayObserver as PlatformDisplayObserver, MacOSError as PlatformError,
-    get_displays as get_platform_displays,
+    MacOSDisplayId as PlatformDisplayId, MacOSDisplayObserver as PlatformDisplayObserver,
+    MacOSError as PlatformError, get_displays as get_platform_displays,
 };
 #[cfg(target_os = "windows")]
 use windows::{
-    WindowsDisplay as PlatformDisplay, WindowsDisplayId as PlatformDisplayId,
-    WindowsDisplayObserver as PlatformDisplayObserver, WindowsError as PlatformError,
-    get_displays as get_platform_displays,
+    WindowsDisplayId as PlatformDisplayId, WindowsDisplayObserver as PlatformDisplayObserver,
+    WindowsError as PlatformError, get_displays as get_platform_displays,
 };
 
 /// The error type for this crate.
@@ -66,11 +64,15 @@ impl From<PlatformDisplayId> for DisplayId {
 }
 
 impl DisplayId {
-    /// Returns platform representation of the display id.
-    ///
-    /// # Safety
-    /// The display ID returned by this function might become invalid after the display is removed.
-    pub fn platform_id(&self) -> &PlatformDisplayId {
+    /// Returns the Windows-specific display id.
+    #[cfg(target_os = "windows")]
+    pub fn windows_id(&self) -> &PlatformDisplayId {
+        &self.0
+    }
+
+    /// Returns the macOS-specific display id.
+    #[cfg(target_os = "macos")]
+    pub fn macos_id(&self) -> &PlatformDisplayId {
         &self.0
     }
 }
@@ -99,115 +101,38 @@ pub struct Size {
 /// This struct provides a cross-platform interface to interact with displays.
 /// You can get the display's id, origin, size, and check if it's mirrored.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Display(PlatformDisplay);
-
-impl From<PlatformDisplay> for Display {
-    fn from(value: PlatformDisplay) -> Self {
-        Self(value)
-    }
-}
-
-impl From<Display> for PlatformDisplay {
-    fn from(value: Display) -> Self {
-        value.0
-    }
-}
-
-impl Display {
-    /// Get the Windows specific display implementation.
-    #[cfg(target_os = "windows")]
-    pub fn windows_display(&self) -> &windows::WindowsDisplay {
-        &self.0
-    }
-
-    /// Get the macOS specific display implementation.
-    #[cfg(target_os = "macos")]
-    pub fn macos_display(&self) -> &macos::MacOSDisplay {
-        &self.0
-    }
-
-    /// Get the unique identifier of the display.
-    pub fn id(&self) -> DisplayId {
-        self.0.id().into()
-    }
-
-    /// Get the origin of the display.
-    pub fn origin(&self) -> Result<Origin, Error> {
-        #[cfg(target_os = "windows")]
-        {
-            Ok(self.0.origin()?)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(self.0.origin())
-        }
-    }
-
-    /// Get the size of the display.
-    pub fn size(&self) -> Result<Size, Error> {
-        #[cfg(target_os = "windows")]
-        {
-            Ok(self.0.size()?)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(self.0.size())
-        }
-    }
-
-    /// Check if the display is mirrored.
-    pub fn is_mirrored(&self) -> Result<bool, Error> {
-        #[cfg(target_os = "windows")]
-        {
-            Ok(self.0.is_mirrored()?)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(self.0.is_mirrored())
-        }
-    }
-
-    /// Check if this display is the primary monitor.
-    pub fn is_primary(&self) -> Result<bool, Error> {
-        #[cfg(target_os = "windows")]
-        {
-            Ok(self.0.is_primary()?)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(self.0.is_primary())
-        }
-    }
+pub struct Display {
+    /// The unique identifier of the display.
+    pub id: DisplayId,
+    /// The origin of the display.
+    pub origin: Origin,
+    /// The size of the display.
+    pub size: Size,
+    /// Whether the display is the primary monitor.
+    pub is_primary: bool,
+    /// Whether the display is mirrored.
+    pub is_mirrored: bool,
 }
 
 /// An event that occurs when the display configuration changes.
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A display was added.
-    Added,
+    Added(Display),
     /// A display was removed.
-    Removed { id: DisplayId },
+    Removed(DisplayId),
     /// The size of a display changed.
-    SizeChanged { before: Size, after: Size },
+    SizeChanged(Display),
     /// The origin of a display changed.
-    OriginChanged { before: Origin, after: Origin },
+    OriginChanged(Display),
     /// A display was mirrored.
-    Mirrored,
+    Mirrored(Display),
     /// A display was unmirrored.
-    UnMirrored,
-}
-
-/// A wrapper around [`Event`] that provides the display if it is still available.
-#[derive(Clone)]
-pub enum MayBeDisplayAvailable {
-    /// The display is available.
-    Available { display: Display, event: Event },
-    /// The display is not available (e.g. it was removed).
-    NotAvailable { event: Event },
+    UnMirrored(Display),
 }
 
 /// A callback function that is called when a display event occurs.
-pub type DisplayEventCallback = Box<dyn FnMut(MayBeDisplayAvailable) + Send + 'static>;
+pub type DisplayEventCallback = Box<dyn FnMut(Event) + Send + 'static>;
 
 pub struct DisplayObserver {
     inner: PlatformDisplayObserver,
@@ -242,7 +167,7 @@ impl DisplayObserver {
 
     pub fn set_callback<F>(&self, callback: F)
     where
-        F: FnMut(MayBeDisplayAvailable) + Send + 'static,
+        F: FnMut(Event) + Send + 'static,
     {
         self.inner.set_callback(Box::new(callback));
     }

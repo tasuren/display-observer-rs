@@ -23,12 +23,12 @@
 
 ### 構造体`Display`
 
-ディスプレイ情報を取得するための構造体で、以下のメソッドを提供する。
+ディスプレイ情報を格納する構造体。
 
-- `origin`: ディスプレイの場所の取得
-- `size`: 解像度の取得
-- `is_mirrored`: ミラーリングされているかどうかの取得
-- `is_primary`: プライマリモニタかどうかの取得
+- `origin`: ディスプレイの場所
+- `size`: ディスプレイの大きさ
+- `is_primary`: プライマリモニタかどうか
+- `is_mirrored`: ミラーリングされているかどうか
 
 ### 構造体`DisplayObserver`
 
@@ -57,7 +57,7 @@
 - `Removed`: ディスプレイの削除
 - `Mirrored`: ディスプレイのミラーリング設定
 - `UnMirrored`: ディスプレイのミラーリング解除
-- `ResolutionChanged`: ディスプレイの解像度変更
+- `SizeChanged`: ディスプレイの解像度変更
 - `OriginChanged`: ディスプレイの場所（原点）変更
 
 ## アーキテクチャ
@@ -67,8 +67,8 @@
 基本的にプラットフォーム固有の実装は前述のmacosモジュールとwindowsモジュールで行う。
 
 `lib.rs`では、プラットフォーム固有の実装を
-`PlatformDisplayObserver`や`PlatformDisplay`というようなPlatformをプリフィックスとして
-インポートし、それをラップした`DisplayObserver`や`Display`を提供する。
+`PlatformDisplayObserver`や`PlatformDisplayId`というようなPlatformをプリフィックスとして
+インポートし、それをラップした`DisplayObserver`や`DisplayId`を提供する。
 
 なお、ユーザー側がプラットフォーム固有の実装を直接使う場合は、このPlatformをプリフィックスとするもの
 ではなく、macosモジュール、windowsモジュールにある`MacOSDisplay`や`WindowsDisplay`といった、
@@ -81,7 +81,7 @@ Windowsではエラーになる。
 #### Windows
 
 WindowsではディスプレイのIDとしてデバイスパスを用いる。当初は`HMONITOR`を使う予定であったが、
-設定が変わる毎に無効になる可能性があるため、デバイスパスを使うことになった。（ただ、未確認の項目があるので要調査。）
+設定が変わる毎に無効になる可能性があるため、デバイスパスを使うことになった。
 
 イベントの追跡には、見えないウィンドウを作り、そのイベントとして`WM_DISPLAYCHANGE`を受け取る。
 ただ、これにはどのディスプレイの何の設定が変更されたのか不明なので、構造体`EventTracker`にて

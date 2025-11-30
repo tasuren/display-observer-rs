@@ -1,17 +1,33 @@
-use display_config::{DisplayObserver, MayBeDisplayAvailable};
+use display_config::{DisplayObserver, Event};
 
-fn on_event(event: MayBeDisplayAvailable) {
+fn on_event(event: Event) {
     match event {
-        MayBeDisplayAvailable::Available { display, event } => {
+        Event::Added(display) => {
             println!(
-                "{event:?} ... id = {:?}, origin = {:?}, size = {:?}",
-                display.id(),
-                display.origin(),
-                display.size()
+                "Added ... id = {:?}, origin = {:?}, size = {:?}",
+                display.id, display.origin, display.size
             );
         }
-        MayBeDisplayAvailable::NotAvailable { event } => {
-            println!("{event:?} ... display is not available");
+        Event::Removed(id) => {
+            println!("Removed ... id = {:?}", id);
+        }
+        Event::SizeChanged(display) => {
+            println!(
+                "SizeChanged ... id = {:?}, new size = {:?}",
+                display.id, display.size
+            );
+        }
+        Event::OriginChanged(display) => {
+            println!(
+                "OriginChanged ... id = {:?}, new origin = {:?}",
+                display.id, display.origin
+            );
+        }
+        Event::Mirrored(display) => {
+            println!("Mirrored ... id = {:?}", display.id);
+        }
+        Event::UnMirrored(display) => {
+            println!("UnMirrored ... id = {:?}", display.id);
         }
     }
 }
