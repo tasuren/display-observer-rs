@@ -157,7 +157,10 @@ impl From<RECT> for Size {
     }
 }
 
-type EnumDisplayMonitorsUserData = Vec<Display>;
+struct EnumDisplayMonitorsUserData {
+    displays: Vec<Display>,
+    result: Result<(), WindowsError>,
+}
 
 unsafe extern "system" fn monitor_enum_proc(
     h_monitor: HMONITOR,
@@ -170,13 +173,14 @@ unsafe extern "system" fn monitor_enum_proc(
         return false.into();
     }
 
-    let monitors = unsafe { &mut *monitors_ptr };
+    let user_data = unsafe { &mut *monitors_ptr };
 
     // Get full monitor info
     let mut monitor_info = MONITORINFOEXW::default();
     monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as _;
 
-    if !unsafe { GetMonitorInfoW(h_monitor, &raw mut monitor_info as _) }.as_bool() {
+    if let Err(e) = unsafe { GetMonitorInfoW(h_monitor, &raw mut monitor_info as _) }.ok() {
+        user_data.result = Err(e);
         return true.into(); // Skip this monitor but continue enumeration
     }
 
@@ -197,9 +201,15 @@ unsafe extern "system" fn monitor_enum_proc(
     let is_primary = (monitor_info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0;
 
     // We need to check mirroring separately
-    let is_mirrored = is_display_mirrored(id.device_name()).unwrap_or(false);
+    let is_mirrored = match is_display_mirrored(id.device_name()) {
+        Ok(value) => value,
+        Err(e) => {
+            user_data.result = Err(e);
+            return false.into();
+        }
+    };
 
-    monitors.push(Display {
+    user_data.displays.push(Display {
         id: id.into(),
         origin,
         size,
@@ -212,19 +222,22 @@ unsafe extern "system" fn monitor_enum_proc(
 
 /// Get a list of all currently active Windows displays.
 pub fn get_displays() -> Result<Vec<Display>, WindowsError> {
-    let mut monitors: EnumDisplayMonitorsUserData = Default::default();
+    let mut user_data: EnumDisplayMonitorsUserData = EnumDisplayMonitorsUserData {
+        displays: Vec::new(),
+        result: Ok(()),
+    };
 
     unsafe {
         EnumDisplayMonitors(
             None,
             None,
             Some(monitor_enum_proc),
-            LPARAM(&raw mut monitors as isize),
+            LPARAM(&raw mut user_data as isize),
         )
         .ok()?;
     };
 
-    Ok(monitors)
+    user_data.result.map(|_| user_data.displays)
 }
 
 struct EventTracker {
